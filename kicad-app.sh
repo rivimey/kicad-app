@@ -1,13 +1,23 @@
-#!/bin/sh
+#!/bin/bash
 
 # -----
 # Options
 # -----
-THREADS=5
-OSX_SDK_VER=10.12
+THREADS=4
+OSX_SDK_VER=10.11
+KICAD_BRANCH=master
 
-BASE=`pwd`
-COMPILER=clang
+export COMPILER=clang
+export CC=cc
+export CXX=g++
+
+#Apple clang:
+export CFLAGS="-Wno-potentially-evaluated-expression -Wno-shift-negative-value"
+export CXXFLAGS="-Wno-potentially-evaluated-expression -Wno-shift-negative-value"
+
+# Homebrew/gcc6 (won't build from NSApp headers :( )
+#export CFLAGS="-Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-shift-negative-value"
+#export CXXFLAGS="-Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-shift-negative-value"
 
 WX_SRC_URL="http://downloads.sourceforge.net/project/wxpython/wxPython/3.0.2.0/wxPython-src-3.0.2.0.tar.bz2"
 WX_SRC_NAME=wxPython-src-3.0.2.0.tar.bz2
@@ -16,21 +26,40 @@ KICAD_GIT=https://git.launchpad.net/kicad
 I18N_GIT=https://github.com/KiCad/kicad-i18n.git
 LIBRARY_GIT=https://github.com/KiCad/kicad-library.git
 
-KICAD_SRC=kicad
-I18N_DIR=i18n
-LIBRARY_DIR=library
+BASE="`pwd`"
+WX_PATCHES="$BASE/kicad-app/wx/patches"
+NOTES_DIR="$BASE/notes"
 
-KICAD_BUILD_DIR=build
+WX_DIR="$BASE/wx"
+WX_SRC="$WX_DIR/src"
+WX_BUILD="$WX_DIR/build"
+WX_BIN="$WX_DIR/bin"
+WXPY_SRC="$WX_SRC/wxPython"
 
-KICAD_BIN=bin
-SUPPORT_BIN=support
+I18N_DIR="$BASE/i18n"
+I18N_SRC="$I18N_DIR/src"
+I18N_BUILD="$I18N_DIR/build"
+I18N_BIN="$I18N_DIR/bin"
+
+LIBRARY_DIR="$BASE/library"
+LIBRARY_SRC="$LIBRARY_DIR/src"
+LIBRARY_BUILD="$LIBRARY_DIR/build"
+LIBRARY_BIN="$LIBRARY_DIR/bin"
+
+KICAD_DIR="$BASE/kicad"
+KICAD_SRC="$BASE/kicad"
+KICAD_BUILD="$BASE/build"
+KICAD_BIN="$BASE/bin"
+KICAD_PATCHES="$BASE/kicad_patches"
+
+SUPPORT_BIN="$BASE/support"
 
 KICAD_SETTINGS=(
     "-DDEFAULT_INSTALL_PATH=/Library/Application Support/kicad"
     "-DCMAKE_OSX_DEPLOYMENT_TARGET=$OSX_SDK_VER"
-    "-DwxWidgets_CONFIG_EXECUTABLE=$BASE/wx/bin/bin/wx-config"
-    "-DPYTHON_SITE_PACKAGE_PATH=$BASE/wx/bin/lib/python2.7/site-packages"
-    "-DCMAKE_INSTALL_PREFIX=$BASE/bin"
+    "-DwxWidgets_CONFIG_EXECUTABLE=$WX_BUILD/wx-config"
+    "-DPYTHON_SITE_PACKAGE_PATH=$WX_BIN/lib/python2.7/site-packages"
+    "-DCMAKE_INSTALL_PREFIX=$KICAD_BIN"
     "-DCMAKE_BUILD_TYPE=Release"
     "-DKICAD_USE_SCH_IO_MANAGER=ON"
     "-DKICAD_INSTALL_DEMOS=OFF"
@@ -46,9 +75,18 @@ KICAD_SETTINGS=(
 # End Options
 # -----
 
+clean() {
+    dirs="$NOTES_DIR $KICAD_BUILD $KICAD_BIN $WX_BUILD $WX_BIN $I18N_BUILD $I18N_BIN $LIBRARY_BUILD $LIBRARY_BIN $SUPPORT_BIN"
+    echo Cleaning:
+    for folder in $dirs; do
+        echo "  $folder"
+        rm -rf "$folder"
+    done
+}
+
 check_compiler() {
     printf "Checking for Compiler... "
-    if !(which cc > /dev/null); then
+    if !(which $CC > /dev/null); then
         printf "Unable to find a compiler. Install a compiler and try again\n"
         exit 1
     else
@@ -64,7 +102,7 @@ check_deps() {
         printf "Done\n"
     fi
     printf "Checking Dependencies... "
-    if ! brew list gettext cmake glew cairo glm automake libtool oce swig libngspice> /dev/null; then
+    if ! brew list gettext cmake glew cairo glm automake libtool homebrew/science/oce swig libngspice >/dev/null; then
         printf "Run brew install boost gettext cmake glew cairo glm automake libtool homebrew/science/oce swig libngspice\n"
         exit 1
     else
@@ -72,44 +110,98 @@ check_deps() {
     fi
 }
 
-check_wx() {
-    cd wx
+check_notes() {
+    mkdir -p $NOTES_DIR;
+}
+
+dopatch() {
+    name="$1"
+    sloc="$2"
+    ploc="$3"
+    pfile="$4"
+
+    if [ ! -f "$loc/$pfile" ]; then
+        printf "ERROR: $name patch $pfile not found, ignoring.\n"
+        exit 1
+    fi
+
+    cd "$sloc"
+    printf "Patching.. $pfile  "
+    printf "$name:$loc:$pfile\n" >>$NOTES_DIR/patch.log
+    if patch -p0 < "$loc/$pfile" >>$NOTES_DIR/patch.log ; then
+      printf ".. OK.\n"
+    else
+      printf ".. Failed.\n"
+    fi
+}
+
+patchwx() {
+    dopatch "wxWindows" "$WX_SRC" "$WX_PATCHES" "$1"
+}
+
+patchki() {
+    dopatch "KiCad" "$KICAD_SRC" "$KICAD_PATCHES" "$1"
+}
+
+wx_fetch() {
+    mkdir -p "$WX_DIR"
+    cd "$WX_DIR"
+
     printf "Fetching wxPython... "
-    if [ ! -f $WX_SRC_NAME ]; then
+    if [ ! -f "$WX_SRC_NAME" ]; then
         printf "Downloading $WX_SRC_NAME"
-        curl -L -o $WX_SRC_NAME $WX_SRC_URL
-    else
+        curl -L -o "$WX_SRC_NAME" "$WX_SRC_URL"
         printf "Done\n"
+    else
+        printf "Found\n"
     fi
-    
+
     printf "Extracting wxWidgets... "
-    if [ ! -d src ]; then
-        mkdir src
-        cd src
-        tar xf ../$WX_SRC_NAME --strip-components 1
-        
-        patch -p0 < ../patches/wxwidgets-3.0.0_macosx.patch || exit 1
-		patch -p0 < ../patches/wxwidgets-3.0.0_macosx_bug_15908.patch || exit 1 
-		patch -p0 < ../patches/wxwidgets-3.0.0_macosx_soname.patch || exit 1
-		patch -p0 < ../patches/wxwidgets-3.0.2_macosx_yosemite.patch || exit 1
-		patch -p0 < ../patches/wxwidgets-3.0.0_macosx_scrolledwindow.patch || exit 1
-		patch -p0 < ../patches/wxwidgets-3.0.2_macosx_retina_opengl.patch || exit 1
-		patch -p0 < ../patches/wxwidgets-3.0.2_macosx_magnify_event.patch || exit 1
-        patch -p0 < ../patches/wxwidgets-3.0.2_macosx_unicode_pasteboard.patch || exit 1
-        patch -p0 < ../patches/wxwidgets-3.0.2_macosx_sierra.patch || exit 1
-        
-        cd ..
-    else
+    if [ ! -d "$WX_SRC" -o ! -e "$WX_SRC/wxPython.spec" ]; then
+        mkdir -p "$WX_SRC"
+        cd "$WX_SRC"
+        tar xf "$WX_DIR/$WX_SRC_NAME" --strip-components 1
         printf "Done\n"
+    else
+        printf "Found\n"
     fi
-    
+
+    printf "Patching wxWidgets... "
+    if [ -d "$WX_PATCHES"  ]; then
+        check_notes
+        if [ -f "$WX_SRC/.patches_applied" ]; then
+            printf "Already Patched.\n"
+        else
+            printf "\n"
+            date >$NOTES_DIR/patch.log
+            patchwx "wxwidgets-3.0.0_macosx.patch"
+            patchwx "wxwidgets-3.0.0_macosx_bug_15908.patch"
+            patchwx "wxwidgets-3.0.0_macosx_soname.patch"
+            patchwx "wxwidgets-3.0.2_macosx_yosemite.patch"
+            patchwx "wxwidgets-3.0.0_macosx_scrolledwindow.patch"
+            patchwx "wxwidgets-3.0.2_macosx_retina_opengl.patch"
+            patchwx "wxwidgets-3.0.2_macosx_magnify_event.patch"
+            patchwx "wxwidgets-3.0.2_macosx_unicode_pasteboard.patch"
+            patchwx "wxwidgets-3.0.2_macosx_sierra.patch"
+            touch "$WX_SRC/.patches_applied"
+            printf "Done\n"
+        fi
+    else
+        printf "No patches.\n"
+    fi
+}
+
+wx_build() {
+    mkdir -p "$WX_DIR"
+    cd "$WX_DIR"
+
     printf "Building wxWidgets... "
-    if [ ! -d build ]; then
-        mkdir build
-        cd build
+    if [ ! -d "$WX_BUILD" -o ! -f "$WX_BUILD/Makefile" ]; then
+        mkdir -p "$WX_BUILD"
+        cd "$WX_BUILD"
         export MAC_OS_X_VERSION_MIN_REQUIRED=$OSX_SDK_VER
-        ../src/configure \
-            --prefix=`pwd`/../bin \
+        "$WX_SRC/configure" \
+            --prefix="$KICAD_BIN" \
             --with-opengl \
             --enable-aui \
             --enable-utf8 \
@@ -125,200 +217,189 @@ check_wx() {
             --without-liblzma \
             --with-macosx-version-min=$OSX_SDK_VER \
             --disable-mediactrl # Not compatible with macOS 10.12
-        cd ..
     fi
 
-    if [ ! -d bin ]; then
-        cd build
+    if [ ! -d "$WX_BIN" ]; then
+        cd "$WX_BUILD"
         make -j$THREADS
         if [ $? == 0 ]; then
-            mkdir ../bin
+            mkdir -p "$WX_BIN"
             make install
-            cd ..
-        else 
-            cd ..
-            exit 1
-        fi
-    else
-        printf "Done\n"
-    fi
-
-    printf "Building wxPython... "
-    if [ ! -d bin/lib/python2.7/site-packages ]; then
-        cd src/wxPython
-        export MAC_OSX_VERSION_MIN_REQUIRED=$OSX_SDK_VER
-        WXPYTHON_BUILD_OPTS="WX_CONFIG=`pwd`/../../bin/bin/wx-config \
-            BUILD_BASE=`pwd`/../../build \
-            UNICODE=1 \
-            WXPORT=osx_cocoa"
-            
-        WXPYTHON_PREFIX="--prefix=`pwd`/../../bin"
-        python setup.py build_ext $WXPYTHON_BUILD_OPTS
-        if [ $? == 0 ]; then
-            python setup.py install $WXPYTHON_PREFIX $WXPYTHON_BUILD_OPTS
         else
-            cd ../../
             exit 1
         fi
-        cd ../../
     else
         printf "Done\n"
     fi
+}
 
-    cd ..
+wxpy_build() {
+    printf "Building wxPython... "
+    if [ ! -x "$WX_BUILD/wx-config" ] ; then
+        echo "ERROR: wx-config not found.. cannot continue."
+    fi
+    if [ ! -d "$WX_BIN/lib/python2.7/site-packages" ]; then
+        cd "$WXPY_SRC"
+        export MAC_OSX_VERSION_MIN_REQUIRED=$OSX_SDK_VER
+        WXPYTHON_BUILD_OPTS="WX_CONFIG=$WX_BUILD/wx-config BUILD_BASE=$KICAD_BUILD UNICODE=1 WXPORT=osx_cocoa"
+
+        WXPYTHON_PREFIX="--prefix=$KICAD_BIN"
+        python "$WXPY_SRC/setup.py" build_ext $WXPYTHON_BUILD_OPTS
+        if [ $? == 0 ]; then
+            python "$WXPY_SRC/setup.py" install $WXPYTHON_PREFIX $WXPYTHON_BUILD_OPTS
+        else
+            exit 1
+        fi
+    else
+        printf "Done\n"
+    fi
 }
 
 # Kicad
+kicad_fetch() {
+    if [ ! -d "$KICAD_SRC" ]; then
+        git clone "$KICAD_GIT" "$KICAD_SRC"
+    else
+        echo "Kicad Sources found."
+    fi
+}
+
+kicad_pull() {
+    if [ -d "$KICAD_SRC" ]; then
+        git -C "$KICAD_SRC" checkout "$KICAD_BRANCH"
+        git -C "$KICAD_SRC" pull
+    else
+        echo "ERROR: Kicad Sources not found."
+    fi
+}
+
 kicad_update() {
-    if [ ! -d $KICAD_SRC ]; then
-        git clone $KICAD_GIT $KICAD_SRC
-    else 
-        git -C $KICAD_SRC checkout
-        git -C $KICAD_SRC pull
+    if [ ! -d "$KICAD_SRC" ]; then
+        kicad_fetch
+    else
+        kicad_pull
     fi
 }
 
 kicad_patch() {
-    if [ -e $BASE/notes/kicad_patches ]; then
-        rm $BASE/notes/kicad_patches
-    fi
-    
-    if [ -e $BASE/kicad_patches ]; then
-        for patch in `find $BASE/kicad_patches -type f -name \*.patch`; do
-            echo "Applying $patch"
-            patch -d $SRC -p0 < $patch
-            echo "`basename $patch`" >> $BASE/notes/kicad_patches
+    if [ -d "$BASE/kicad_patches" ]; then
+        cd "$BASE/kicad_patches"
+        for patch in $(find . -type f -size +0 -name \*.patch); do
+            patchki "$patch"
         done
+    else
+        echo "No additional KiCad patches."
     fi
 }
 
 kicad_build() {
-    if [ ! -d $KICAD_SRC ]; then
-        git clone $KICAD_GIT $KICAD_SRC
+    if [ ! -d "$KICAD_SRC" ]; then
+        echo "ERROR: No KiCad source found."
+    fi
+    if [ ! -x "$WX_BUILD/wx-config" ] ; then
+        echo "ERROR: wx-config not found.. cannot continue."
     fi
 
-    if [ ! -d $KICAD_BUILD_DIR ]; then
-        mkdir $KICAD_BUILD_DIR
-        cd $KICAD_BUILD_DIR
-        cmake "${KICAD_SETTINGS[@]}" ../$KICAD_SRC
-        cd ..
-    fi
+    rm -rf "$KICAD_BIN"
+    mkdir -p "$KICAD_BUILD"
+    cd "$KICAD_BUILD"
 
-    cd $KICAD_BUILD_DIR
+    cmake "${KICAD_SETTINGS[@]}" "$KICAD_SRC"
     make -j$THREADS
 
-    if [ -d ../$KICAD_BIN ]; then
-        rm -r ../$KICAD_BIN
-    fi
+    mkdir -p "$KICAD_BIN"
     make install
-
-    cd ..
 }
 
 kicad_rebuild() {
-    if [ -d $KICAD_BUILD_DIR ]; then
-        rm -r $KICAD_BUILD_DIR
-    fi
+    rm -rf "$KICAD_BUILD"
+    rm -rf "$KICAD_BIN"
 
     kicad_build
 }
 
-i18n_update() {
-    if [ ! -d $I18N_DIR ]; then
-        mkdir $I18N_DIR
-    fi
-
-    cd $I18N_DIR
-
-    if [ ! -d src ]; then
-        git clone $I18N_GIT src
+i18n_fetch() {
+    if [ ! -d "$I18N_SRC" ]; then
+        git clone "$I18N_GIT" "$I18N_SRC"
     else
-        git -C src checkout
-        git -C src pull
+        echo "KiCad Localisation Sources found."
     fi
+}
 
-    cd -
+i18n_pull() {
+    if [ -d "$I18N_SRC" ]; then
+        git -C "$I18N_SRC" checkout "$I18N_BRANCH"
+        git -C "$I18N_SRC" pull
+    else
+        echo "KiCad Localisation Sources NOT found."
+    fi
+}
+
+i18n_update() {
+    mkdir -p "$I18N_DIR"
+    cd "$I18N_DIR"
+
+    if [ ! -d "$I18N_SRC" ]; then
+        i18n_fetch
+    else
+        i18n_pull
+    fi
 }
 
 i18n_build() {
-    if [ ! -d $I18N_DIR ]; then
-        mkdir $I18N_DIR
-    fi
+    mkdir -p "$I18N_DIR"
+    cd "$I18N_DIR"
 
-    cd $I18N_DIR
-    #Fetch
-    if [ ! -d src ]; then
-        git clone $I18N_GIT src
-    fi
+    i18n_fetch
 
-    #build
-    mkdir -p build
-    cd build
+    rm -rf "$I18N_BIN"
+    mkdir -p "$I18N_BIN"
 
-    if [ -d ../bin ]; then
-        rm -r ../bin
-    fi
-    mkdir -p ../bin
-    cmake -DCMAKE_INSTALL_PREFIX=../bin \
-          -DKICAD_I18N_PATH=../bin/internat \
-          -DGETTEXT_MSGMERGE_EXECUTABLE=$(brew --prefix gettext)/bin/msgmerge \
-          -DGETTEXT_MSGFMT_EXECUTABLE=$(brew --prefix gettext)/bin/msgfmt \
-          ../src
+    # Build
+    mkdir -p "$I18N_BUILD"
+    cd "$I18N_BUILD"
+
+    cmake -DCMAKE_INSTALL_PREFIX="$I18N_BIN" \
+          -DKICAD_I18N_PATH="$I18N_BIN/internat" \
+          -DGETTEXT_MSGMERGE_EXECUTABLE="$(brew --prefix gettext)/bin/msgmerge" \
+          -DGETTEXT_MSGFMT_EXECUTABLE="$(brew --prefix gettext)/bin/msgfmt" \
+          "$I18N_SRC"
     make install
-
-    cd -
 }
 
 # Symbols/3d models
 library_update() {
-    if [ ! -d $LIBRARY_DIR ]; then
-        mkdir $LIBRARY_DIR
-    fi
+    mkdir -p "$LIBRARY_DIR"
+    cd "$LIBRARY_DIR"
 
-    cd $LIBRARY_DIR
-
-    if [ ! -d src ]; then
-        git clone $LIBRARY_GIT src
+    if [ ! -d "$LIBRARY_SRC" ]; then
+        git clone "$LIBRARY_GIT" "$LIBRARY_SRC"
     else
-        git -C src checkout
-        git -C src pull
+        git -C "$LIBRARY_SRC" checkout
+        git -C "$LIBRARY_SRC" pull
     fi
-
-    cd -
 }
 
 library_build() {
-    if [ ! -d $LIBRARY_DIR ]; then
-        mkdir $LIBRARY_DIR
+    if [ ! -d "$LIBRARY_DIR" ]; then
+        mkdir "$LIBRARY_DIR"
     fi
 
-    cd $LIBRARY_DIR
+    cd "$LIBRARY_DIR"
 
-    if [ ! -d src ]; then
-        git clone $LIBRARY_GIT src
+    if [ ! -d "$LIBRARY_SRC" ]; then
+        git clone "$LIBRARY_GIT" "$LIBRARY_SRC"
     fi
 
-    mkdir -p build
-    cd build
+    mkdir -p "$LIBRARY_BUILD"
+    cd "$LIBRARY_BUILD"
 
-    if [ -d ../bin ]; then
-        rm -r ../bin
+    if [ -d "$LIBRARY_BIN" ]; then
+        rm -r "$LIBRARY_BIN"
     fi
-    mkdir -p ../bin
-    cmake -DCMAKE_INSTALL_PREFIX=../bin ../src
+    mkdir -p "$LIBRARY_BIN"
+    cmake -DCMAKE_INSTALL_PREFIX="$LIBRARY_BIN" "$LIBRARY_SRC"
     make install
-
-    cd -
-}
-
-package_kicad() {
-    echo "TODO"
-}
-
-clean() {
-    for folder in notes $KICAD_BUILD $KICAD_BIN $I18N_BUILD $SUPPORT_BIN; do
-        rm -r $folder
-    done
 }
 
 print_help() {
@@ -339,6 +420,34 @@ print_help() {
     echo "  i18n_build - Build i18n"
     echo "  library_update - update schematic symbols and 3d models"
     echo "  library_build - build schematic symbols and 3d models"
+    echo "  clean - Delete the build directories for a clean build"
+    echo
+}
+
+check() {
+    check_compiler
+    check_deps
+}
+
+fetchapp() {
+    kicad_fetch
+    i18n_fetch
+    wx_fetch
+}
+
+buildapp() {
+    wx_build
+    wxpy_build
+    kicad_build
+    i18n_build
+}
+
+
+print_sequence() {
+    echo "Use this sequence of commands:"
+    echo "  kicad-app.sh check"
+    echo "  kicad-app.sh fetchapp"
+    echo "  kicad-app.sh buildapp"
     echo
 }
 
@@ -360,11 +469,8 @@ done
 shift $(expr $OPTIND - 1 )
 
 if [ $# -eq 0 ]; then
-    echo check_compiler
-    echo check_deps
-    echo check_wx
-    echo kicad_fetch
-    echo kicad_build
+    print_sequence
+    exit 1
 else
     while [ $# -gt 0 ]; do
         if [[ $(type -t $1) == function ]]; then
@@ -377,3 +483,5 @@ else
         shift
     done
 fi
+exit 0
+

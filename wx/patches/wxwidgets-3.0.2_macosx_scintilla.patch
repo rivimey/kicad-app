@@ -1,0 +1,22 @@
+--- src/stc/scintilla/src/Editor.cxx	2017-03-12 00:01:42.000000000 +0000
++++ src/stc/scintilla/src/Editor.cxx	2017-03-12 00:00:48.000000000 +0000
+@@ -16,6 +16,7 @@
+ #include <map>
+ #include <algorithm>
+ #include <memory>
++#include <cmath>
+ 
+ #include "Platform.h"
+ 
+@@ -5841,9 +5842,9 @@
+ }
+ 
+ static bool Close(Point pt1, Point pt2) {
+-	if (abs(pt1.x - pt2.x) > 3)
++	if (std::fabs(pt1.x - pt2.x) > 3)
+ 		return false;
+-	if (abs(pt1.y - pt2.y) > 3)
++	if (std::fabs(pt1.y - pt2.y) > 3)
+ 		return false;
+ 	return true;
+ }
